@@ -107,13 +107,13 @@ public actor AsyncSemaphore {
         }
     }
     
-    /// Signals the semaphore, incrementing the value and waking up one waiting task if any are blocked.
-    /// If there are no waiting tasks, it simply increments the value.
+    /// Signals the semaphore, waking up one waiting task if any are blocked, or incrementing the value if none are.
     /// - Returns: `true` if a waiting task was signaled, `false` if there were no waiting tasks.
     @discardableResult
     public func signal() -> Bool {
-        value += 1
         guard let firstTicket = queue.popFirst() else {
+            // No waiter — bank the permit so a future wait() can consume it.
+            value += 1
             return false
         }
         guard let waiter = blockedWaiters[firstTicket] else {
@@ -123,6 +123,7 @@ public actor AsyncSemaphore {
         guard !waiter.isCancelled else {
             preconditionFailure("Cancelled waiter for ticket \(firstTicket) should not have been in the queue")
         }
+        // Permit transfers directly to the waiter; value stays unchanged.
         waiter.continuation?.resume(returning: ())
         return true
     }

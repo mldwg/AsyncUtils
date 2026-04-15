@@ -65,7 +65,7 @@ final class AsyncSemaphoreTests: XCTestCase {
             // Given a thread waiting for the semaphore
             let sem = DispatchSemaphore(value: 0)
             Thread { sem.wait() }.start()
-            try await Task.sleep(for: 0.05)
+            try await Task.sleep(for: .seconds(0.05))
             
             // First signal wakes the waiting thread
             XCTAssertTrue(sem.signal() != 0)
@@ -78,7 +78,7 @@ final class AsyncSemaphoreTests: XCTestCase {
             // Given a task suspended on the semaphore
             let sem = AsyncSemaphore(value: 0)
             Task { try await sem.wait() }
-            try await Task.sleep(for: 0.05)
+            try await Task.sleep(for: .seconds(0.05))
             
             
             let firstSignal = await sem.signal()
@@ -155,7 +155,7 @@ final class AsyncSemaphoreTests: XCTestCase {
             }
             ex.fulfill()
         }
-        try await Task.sleep(for: 0.1)
+        try await Task.sleep(for: .seconds(0.1))
         task.cancel()
         await fulfillment(of: [ex], timeout: 1)
     }
@@ -189,7 +189,7 @@ final class AsyncSemaphoreTests: XCTestCase {
         let task = Task {
             try await sem.wait()
         }
-        try await Task.sleep(for: 0.1)
+        try await Task.sleep(for: .seconds(0.1))
         task.cancel()
         
         // When a task waits for this semaphore,
@@ -303,7 +303,7 @@ final class AsyncSemaphoreTests: XCTestCase {
                 
                 count += 1
                 effectiveMaxConcurrentRuns = max(effectiveMaxConcurrentRuns, count)
-                try! await Task.sleep(for: 0.01)
+                try! await Task.sleep(for: .seconds(0.01))
                 count -= 1
                 await semaphore.signal()
             }
@@ -351,7 +351,7 @@ final class AsyncSemaphoreTests: XCTestCase {
                 
                 count += 1
                 effectiveMaxConcurrentRuns = max(effectiveMaxConcurrentRuns, count)
-                try! await Task.sleep(for: 0.01)
+                try! await Task.sleep(for: .seconds(0.01))
                 count -= 1
                 await semaphore.signal()
             }
@@ -447,7 +447,7 @@ final class AsyncSemaphoreTests: XCTestCase {
                         
                         count += 1
                         effectiveMaxConcurrentRuns = max(effectiveMaxConcurrentRuns, count)
-                        try! await Task.sleep(for: 0.01)
+                        try! await Task.sleep(for: .seconds(0.01))
                         count -= 1
                     }
                 } catch {
@@ -472,4 +472,60 @@ final class AsyncSemaphoreTests: XCTestCase {
             XCTAssertEqual(effectiveMaxConcurrentRuns, maxConcurrentRuns)
         }
     }
+
+    // MARK: - Bug regression tests
+
+    /// signal() always increments `value` even when it directly resumes a waiter.
+    /// After signal wakes a suspended wait(), value should be 0, not 1.
+    func testValueDoesNotInflateWhenSignalingWaiter() async throws {
+        let sem = AsyncSemaphore(value: 0)
+
+        let waiterDone = expectation(description: "waiter done")
+        Task {
+            try? await sem.wait()
+            waiterDone.fulfill()
+        }
+
+        // Let the task fully suspend on wait().
+        try await Task.sleep(for: .seconds(0.05))
+
+        await sem.signal()
+        await fulfillment(of: [waiterDone], timeout: 1.0)
+
+        // value should be 0: the single signal was consumed by the waiter.
+        let value = await sem.value
+        XCTAssertEqual(value, 0, "signal() must not inflate value when waking a waiter")
+    }
+
+    /// A follow-on wait() after a signal-that-woke-a-waiter should block,
+    /// not pass through immediately due to an inflated value.
+    func testSubsequentWaitBlocksAfterSignalAndWait() async throws {
+        let sem = AsyncSemaphore(value: 0)
+
+        // Park a task on the semaphore.
+        Task { try? await sem.wait() }
+        try await Task.sleep(for: .seconds(0.05))
+
+        // Wake it.
+        await sem.signal()
+        try await Task.sleep(for: .seconds(0.05))
+
+        // Now value should be 0; a new wait() must block.
+        let secondPassed = ActorBool()
+        let blocker = Task {
+            try await sem.wait()
+            await secondPassed.set(true)
+        }
+
+        try await Task.sleep(for: .seconds(0.1))
+        let passed = await secondPassed.value
+        XCTAssertFalse(passed, "wait() should still be blocked — value must not have been inflated to 1")
+        blocker.cancel()
+    }
+}
+
+/// Minimal actor-backed bool for cross-task observation.
+private actor ActorBool {
+    private(set) var value: Bool = false
+    func set(_ v: Bool) { value = v }
 }

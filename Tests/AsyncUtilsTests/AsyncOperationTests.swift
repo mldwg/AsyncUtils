@@ -15,6 +15,7 @@
 //
 
 import XCTest
+@testable import AsyncUtils
 
 final class AsyncOperationTests: XCTestCase {
 
@@ -88,5 +89,45 @@ final class AsyncOperationTests: XCTestCase {
         XCTAssertLessThanOrEqual(starts[2]!, starts[3]!)
         
         XCTAssertLessThanOrEqual(ends[0]!, starts[3]!)
+    }
+
+    // MARK: - Bug regression tests
+
+    /// cancel() does not call super.cancel(), so NSOperation's own cancelled
+    /// flag is never set. At minimum, our isCancelled override must return true.
+    func testCancelSetsisCancelledFlag() {
+        let op = AsyncOperation { }
+        XCTAssertFalse(op.isCancelled)
+        op.cancel()
+        XCTAssertTrue(op.isCancelled)
+    }
+
+    /// A queued operation that is cancelled before the queue starts it must
+    /// never execute its closure.
+    func testCancelledQueuedOperationDoesNotExecute() async throws {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+
+        // Block the single slot with a long-running operation.
+        let blockerStarted = expectation(description: "blockerStarted")
+        queue.addOperation {
+            blockerStarted.fulfill()
+            try? await Task.sleep(for: .seconds(0.3))
+        }
+        await fulfillment(of: [blockerStarted], timeout: 1.0)
+
+        // Add an operation, then immediately cancel it before the slot opens.
+        let runCount = TestingStorage()
+        let cancelledOp = AsyncOperation {
+            await runCount.incrementCounter()
+        }
+        queue.addOperation(cancelledOp)
+        cancelledOp.cancel()
+
+        // Wait long enough for the blocker to finish and the queue to drain.
+        try await Task.sleep(for: .seconds(0.5))
+
+        let count = await runCount.counter
+        XCTAssertEqual(count, 0, "Cancelled operation must not execute")
     }
 }

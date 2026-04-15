@@ -102,11 +102,11 @@ final class TaskQueueTests: XCTestCase {
         self.queue = .init(maxConcurrentSlots: 2)
         for _ in 0..<3 {
             await self.queue.add {
-                try? await Task.sleep(for: 0.1)
+                try? await Task.sleep(for: .seconds(0.1))
             }
         }
         await self.queue.add {
-            try? await Task.sleep(for: 1.0)
+            try? await Task.sleep(for: .seconds(1.0))
         }
         
         
@@ -120,7 +120,7 @@ final class TaskQueueTests: XCTestCase {
         let delta1 = Date().timeIntervalSince(start1)
         XCTAssertEqual(delta1, 0.05, accuracy: 0.01)
         
-        try? await Task.sleep(for: 0.06)
+        try? await Task.sleep(for: .seconds(0.06))
         
         let start2 = Date()
         // Try to cancel waitForAll while the queue has no free running slots (2 tasks running)
@@ -144,7 +144,7 @@ final class TaskQueueTests: XCTestCase {
     func testAddAndWaitCancelWhileRunningRaceCondition() async throws {
         self.queue = .init(maxConcurrentSlots: 2)
         await self.queue.add {
-            try? await Task.sleep(for: 0.1)
+            try? await Task.sleep(for: .seconds(0.1))
         }
         
         let spamTask = Task {
@@ -155,15 +155,15 @@ final class TaskQueueTests: XCTestCase {
             }
         }
         
-        try await Task.sleep(for: 0.01)
+        try await Task.sleep(for: .seconds(0.01))
         spamTask.cancel()
-        try await Task.sleep(for: 0.1)
+        try await Task.sleep(for: .seconds(0.1))
     }
     
     func testAddAndWaitThrowsCancelWhileRunningRaceCondition() async throws {
         self.queue = .init(maxConcurrentSlots: 2)
         await self.queue.add {
-            try? await Task.sleep(for: 0.1)
+            try? await Task.sleep(for: .seconds(0.1))
         }
         
         let spamTask = Task {
@@ -174,9 +174,9 @@ final class TaskQueueTests: XCTestCase {
             }
         }
         
-        try await Task.sleep(for: 0.01)
+        try await Task.sleep(for: .seconds(0.01))
         spamTask.cancel()
-        try await Task.sleep(for: 0.1)
+        try await Task.sleep(for: .seconds(0.1))
     }
     
     func testCancelQueued() async throws {
@@ -310,7 +310,7 @@ final class TaskQueueTests: XCTestCase {
                     await self.store.incrementCounter()
                 }
                 
-                try? await Task.sleep(for: 0.2)
+                try? await Task.sleep(for: .seconds(0.2))
                 
                 if !Task.isCancelled {
                     await self.store.incrementCounter()
@@ -322,7 +322,7 @@ final class TaskQueueTests: XCTestCase {
             return 1
         }
 
-        try! await Task.sleep(for: 0.1)
+        try! await Task.sleep(for: .seconds(0.1))
         task.cancel()
         let cancellationTime = Date()
         
@@ -339,7 +339,7 @@ final class TaskQueueTests: XCTestCase {
     func testAddAndWaitCancellationWhileQueued() async throws {
         for _ in 0..<3 {
             await self.queue.add {
-                try! await Task.sleep(for: 0.2)
+                try! await Task.sleep(for: .seconds(0.2))
             }
         }
         
@@ -351,7 +351,7 @@ final class TaskQueueTests: XCTestCase {
                     await self.store.incrementCounter()
                 }
                 await self.store.incrementCounter()
-                try? await Task.sleep(for: 0.2)
+                try? await Task.sleep(for: .seconds(0.2))
                 if !Task.isCancelled {
                     await self.store.incrementCounter()
                 }
@@ -360,7 +360,7 @@ final class TaskQueueTests: XCTestCase {
             await self.store.ended(0)
         }
 
-        try! await Task.sleep(for: 0.1)
+        try! await Task.sleep(for: .seconds(0.1))
         task.cancel()
         let cancellationTime = Date()
         
@@ -377,7 +377,7 @@ final class TaskQueueTests: XCTestCase {
     func testAddAndWaitCancellationBeforeQueued() async throws {
         for _ in 0..<3 {
             await self.queue.add {
-                try! await Task.sleep(for: 0.2)
+                try! await Task.sleep(for: .seconds(0.2))
             }
         }
         
@@ -391,7 +391,7 @@ final class TaskQueueTests: XCTestCase {
             await self.store.ended(0)
         }
 
-        try! await Task.sleep(for: 0.1)
+        try! await Task.sleep(for: .seconds(0.1))
         task.cancel()
         let cancellationTime = Date()
         
@@ -412,14 +412,14 @@ final class TaskQueueTests: XCTestCase {
             await self.store.started(0)
             try await self.queue.addAndWait {
                 await self.store.incrementCounter()
-                try await Task.sleep(for: 0.2)
+                try await Task.sleep(for: .seconds(0.2))
                 await self.store.incrementCounter()
             }
             await self.store.ended(0)
 
         }
 
-        try! await Task.sleep(for: 0.1)
+        try! await Task.sleep(for: .seconds(0.1))
         task.cancel()
         let cancellationTime = Date()
         
@@ -437,7 +437,7 @@ final class TaskQueueTests: XCTestCase {
         
         for _ in 0..<3 {
             await self.queue.add {
-                try! await Task.sleep(for: 0.2)
+                try! await Task.sleep(for: .seconds(0.2))
             }
         }
         
@@ -445,14 +445,14 @@ final class TaskQueueTests: XCTestCase {
             await self.store.started(0)
             try await self.queue.addAndWait {
                 await self.store.incrementCounter()
-                try await Task.sleep(for: 0.2)
+                try await Task.sleep(for: .seconds(0.2))
                 await self.store.incrementCounter()
             }
             await self.store.ended(0)
 
         }
 
-        try! await Task.sleep(for: 0.1)
+        try! await Task.sleep(for: .seconds(0.1))
         task.cancel()
         let cancellationTime = Date()
         
@@ -471,7 +471,7 @@ final class TaskQueueTests: XCTestCase {
         
         for _ in 0..<3 {
             await self.queue.add {
-                try! await Task.sleep(for: 0.2)
+                try! await Task.sleep(for: .seconds(0.2))
             }
         }
         
@@ -488,7 +488,7 @@ final class TaskQueueTests: XCTestCase {
 
         }
 
-        try! await Task.sleep(for: 0.1)
+        try! await Task.sleep(for: .seconds(0.1))
         task.cancel()
         let cancellationTime = Date()
         
@@ -501,8 +501,50 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertEqual(ends.count, 0)
         XCTAssertTrue(result.isCancellationResult)
     }
-}
 
+    // MARK: - Bug regression tests
+
+    /// QueueableTask.slots is hardcoded to 1; the init parameter is silently ignored.
+    func testQueueableTaskSlotsStoredCorrectly() {
+        let task1 = TaskQueue.QueueableTask(slots: 1) {}
+        XCTAssertEqual(task1.slots, 1)
+
+        let task3 = TaskQueue.QueueableTask(slots: 3) {}
+        XCTAssertEqual(task3.slots, 3)
+
+        let task5 = TaskQueue.QueueableTask(slots: 5) {}
+        XCTAssertEqual(task5.slots, 5)
+    }
+
+    /// A task that requires 2 slots on a queue with maxConcurrentSlots:2 should
+    /// occupy all slots and block any subsequent 1-slot task until it finishes.
+    func testMultiSlotTaskBlocksQueue() async throws {
+        let q = TaskQueue(maxConcurrentSlots: 2)
+        let storage = TestingStorage()
+
+        // Task 0 consumes both available slots.
+        await q.add(slots: 2) {
+            await storage.started(0)
+            try? await Task.sleep(for: .milliseconds(150))
+            await storage.ended(0)
+        }
+
+        // Task 1 only needs 1 slot but must wait until Task 0 releases its 2.
+        await q.add(slots: 1) {
+            await storage.started(1)
+            await storage.ended(1)
+        }
+
+        try await q.waitForAll()
+
+        let (starts, ends, _) = await storage.data
+        XCTAssertNotNil(starts[0])
+        XCTAssertNotNil(ends[0])
+        XCTAssertNotNil(starts[1])
+        // Task 1 must not start before Task 0 finishes.
+        XCTAssertGreaterThanOrEqual(starts[1]!, ends[0]!)
+    }
+}
 
 extension Result {
     var isCancellationResult: Bool {

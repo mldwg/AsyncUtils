@@ -33,7 +33,7 @@ public actor TaskQueue {
         public let taskPriority: TaskPriority?
         
         /// The number of slots that the task requires. By default, a task requires 1 slot. If a task requires more than 1 slot, it will only be started if there are enough slots available.
-        public let slots: Int = 1
+        public let slots: Int
         
         /// A closure that can be called to cancel the continuation that is waiting for the task to finish. Since this closure resumes a continuation, it should only be called once.
         fileprivate var continuationCancelClosure: (@Sendable () -> Void)?
@@ -49,6 +49,7 @@ public actor TaskQueue {
         /// - Parameters: taskPriority: The priority of the task. If nil, the default priority of the task queue is used.
         /// - Parameters: closure: The closure that contains the work that the task should perform.
         public init(slots: Int = 1, taskPriority: TaskPriority? = nil, closure: @Sendable @escaping () async -> Void) {
+            self.slots = slots
             self.taskPriority = taskPriority
             self.closure = closure
         }

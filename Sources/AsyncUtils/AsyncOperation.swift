@@ -105,6 +105,11 @@ public class AsyncOperation: Operation, @unchecked Sendable {
             self._task?.cancel()
         }
         self.didChangeValue(forKey: "isCancelled")
+        // Update NSOperation's internal cancelled state so OperationQueue
+        // dependency tracking and cancelAllOperations() work correctly.
+        // super posts a second KVO notification, but by then _isCancelled
+        // is already true so observers consistently see the new value.
+        super.cancel()
     }
 
     public func finish() {

@@ -20,8 +20,10 @@ public extension Task where Failure == Never, Success == Never {
     /// Suspends the current task for the given amount of time.
     /// - Parameters: nanoseconds: The number of nanoseconds to wait.
     /// - Throws: For example, if the task is cancelled.
+    /// - Deprecated: Use `sleep(for:tolerance:clock:)` with `ContinuousClock.Duration` instead.
+    @available(*, deprecated, message: "Use sleep(for:tolerance:clock:) with ContinuousClock.Duration instead")
     static func sleep(for seconds: TimeInterval) async throws {
-        try await Task<Never, Never>.sleep(nanoseconds: UInt64(max(1_000_000_000 * seconds, 0)))
+        try await Task<Never, Never>.sleep(for: .seconds(seconds))
     }
 }
 
@@ -32,6 +34,8 @@ public extension Task where Failure == Error {
     /// - Parameters: priority: The priority of the task.
     /// - Parameters: operation: The operation to execute after the delay.
     /// - Returns: The task.
+    /// - Deprecated: Use `delayed(by:priority:operation:)` with `ContinuousClock.Duration` instead.
+    @available(*, deprecated, message: "Use delayed(by:priority:operation:) with ContinuousClock.Duration instead")
     @discardableResult
     static func delayed(
         by delayInterval: TimeInterval,
@@ -39,7 +43,24 @@ public extension Task where Failure == Error {
         operation: @escaping @Sendable () async throws -> Success
     ) -> Task {
         Task(priority: priority) {
-            try await Task<Never, Never>.sleep(for: delayInterval)
+            try await Task<Never, Never>.sleep(for: .seconds(delayInterval))
+            return try await operation()
+        }
+    }
+    
+    /// Creates a new task that will start executing the given operation after the given delay.
+    /// - Parameters: duration: The duration to wait before starting the operation.
+    /// - Parameters: priority: The priority of the task.
+    /// - Parameters: operation: The operation to execute after the delay.
+    /// - Returns: The task.
+    @discardableResult
+    static func delayed(
+        by duration: ContinuousClock.Duration,
+        priority: TaskPriority? = nil,
+        operation: @escaping @Sendable () async throws -> Success
+    ) -> Task {
+        Task(priority: priority) {
+            try await Task<Never, Never>.sleep(for: duration)
             return try await operation()
         }
     }
@@ -50,9 +71,33 @@ public extension Task where Failure == Error {
     /// - Parameters: operation: The operation to execute.
     /// - Returns: The task.
     /// - Note: The task will be cancelled after the given timeout. Since task cancellation is cooperative, the operation may ignore the cancellation and continue to run. Therefore, it is recommended to check the task's `isCancelled` property and return early if the task is cancelled, as the timeout is meaningless otherwise.
+    /// - Deprecated: Use `withTimeout(cancelAfter:priority:operation:)` with `ContinuousClock.Duration` instead.
+    @available(*, deprecated, message: "Use withTimeout(cancelAfter:priority:operation:) with ContinuousClock.Duration instead")
     @discardableResult
     static func withTimeout(
         cancelAfter timeout: TimeInterval,
+        priority: TaskPriority? = nil,
+        operation: @escaping @Sendable () async throws -> Success
+    ) async throws -> Success {
+        let task = Task(priority: priority) {
+            return try await operation()
+        }
+        Task<Void, Error>.delayed(by: timeout, priority: priority) {
+            task.cancel()
+        }
+        
+        return try await task.value
+    }
+    
+    /// Creates a new task that will start executing the given operation immediately and will be cancelled after the given timeout.
+    /// - Parameters: timeout: The duration after which the task will be cancelled.
+    /// - Parameters: priority: The priority of the task.
+    /// - Parameters: operation: The operation to execute.
+    /// - Returns: The task.
+    /// - Note: The task will be cancelled after the given timeout. Since task cancellation is cooperative, the operation may ignore the cancellation and continue to run. Therefore, it is recommended to check the task's `isCancelled` property and return early if the task is cancelled, as the timeout is meaningless otherwise.
+    @discardableResult
+    static func withTimeout(
+        cancelAfter timeout: ContinuousClock.Duration,
         priority: TaskPriority? = nil,
         operation: @escaping @Sendable () async throws -> Success
     ) async throws -> Success {

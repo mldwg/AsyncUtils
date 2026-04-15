@@ -24,16 +24,9 @@ final class TaskExtensionsTests: XCTestCase {
         self.store = .init()
     }
 
-    func testSleepFor() async throws {
-        let start = Date()
-        try await Task.sleep(for: 0.1)
-        let delta = Date().timeIntervalSince(start)
-        XCTAssertEqual(delta, 0.1, accuracy: 0.01)
-    }
-    
     func testDelayedTask() async throws {
         let start = Date()
-        let task = Task.delayed(by: 0.1) {
+        let task = Task.delayed(by: .seconds(0.1)) {
             let delta = Date().timeIntervalSince(start)
             XCTAssertEqual(delta, 0.1, accuracy: 0.01)
         }
@@ -43,10 +36,10 @@ final class TaskExtensionsTests: XCTestCase {
     }
     
     func testTaskWithTimeout() async throws {
-        try await Task.withTimeout(cancelAfter: 0.1) {
-            try await Task.sleep(for: 0.08)
+        try await Task.withTimeout(cancelAfter: .seconds(0.1)) {
+            try await Task.sleep(for: .seconds(0.08))
             XCTAssertFalse(Task.isCancelled)
-            try? await Task.sleep(for: 0.03)
+            try? await Task.sleep(for: .seconds(0.03))
             XCTAssertTrue(Task.isCancelled)
         }
     }

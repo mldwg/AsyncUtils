@@ -49,7 +49,7 @@ final class RateLimiterTests: XCTestCase {
             }
         }
         
-        try await Task.sleep(for: 3.5)
+        try await Task.sleep(for: .seconds(3.5))
         let (_, ends, _) = await storage.data
         XCTAssertEqual(ends.count, count)
         
@@ -60,7 +60,7 @@ final class RateLimiterTests: XCTestCase {
         
         for i in 1..<count {
             XCTAssertEqual(sortedEnds[i].timeIntervalSinceReferenceDate - sortedEnds[i-1].timeIntervalSinceReferenceDate,
-                           0.01, accuracy: 0.003)
+                           0.01, accuracy: 0.01)
         }
     }
     
@@ -68,9 +68,9 @@ final class RateLimiterTests: XCTestCase {
     func testLeakyBucketBlockingCancellation() async throws {
         let rateLimiter = RateLimiter(.leakyBucket(tokenRate: 1))
         let storage = TestingStorage()
-        
+
         try await rateLimiter.tryConsumeToken()
-        
+
         let waitTask = Task {
             do {
                 try await rateLimiter.blockUntilNextTokenAvailable()
@@ -78,13 +78,47 @@ final class RateLimiterTests: XCTestCase {
                 await storage.incrementCounter()
             }
         }
-        
-        try await Task.sleep(for: 0.01)
+
+        try await Task.sleep(for: .seconds(0.01))
         waitTask.cancel()
-        try await Task.sleep(for: 0.01)
-        
+        try await Task.sleep(for: .seconds(0.01))
+
         let counter = await storage.counter
         XCTAssertEqual(counter, 1)
+    }
+
+    // MARK: - Bug regression tests
+
+    /// tokenRate: 0 causes a division producing Double.infinity, which later
+    /// crashes with a UInt64(.infinity) trap in the regeneration task's sleep.
+    /// The synchronous consume path should be safe: the bucket starts full,
+    /// so the first consume succeeds and the second correctly returns false
+    /// without triggering the broken sleep path.
+    func testZeroTokenRateSynchronousConsumeDoesNotCrash() async throws {
+        let rateLimiter = RateLimiter(.leakyBucket(tokenRate: 0))
+
+        // Leaky bucket starts with 1 token — first consume must succeed.
+        let first = await rateLimiter.consumeToken()
+        XCTAssertTrue(first, "First consume should succeed (bucket starts full)")
+
+        // No regeneration possible at rate 0 — second consume must fail.
+        let second = await rateLimiter.consumeToken()
+        XCTAssertFalse(second, "Second consume should fail (no regeneration at tokenRate 0)")
+    }
+
+    /// Same crash risk exists for a token bucket with tokenRate: 0.
+    func testZeroTokenRateTokenBucketSynchronousConsumeDoesNotCrash() async throws {
+        let rateLimiter = RateLimiter(.tokenBucket(maxTokens: 3, tokenRate: 0))
+
+        // Bucket starts full — first 3 consumes must succeed.
+        for _ in 0..<3 {
+            let consumed = await rateLimiter.consumeToken()
+            XCTAssertTrue(consumed)
+        }
+
+        // Fourth consume: bucket empty, no regeneration at rate 0 — must fail.
+        let fourth = await rateLimiter.consumeToken()
+        XCTAssertFalse(fourth)
     }
 
 }

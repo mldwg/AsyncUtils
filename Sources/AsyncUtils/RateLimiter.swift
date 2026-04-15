@@ -18,15 +18,19 @@ import Foundation
 import DequeModule
 
 /// A rate limiter that allows you to control the rate of actions in your application using a leaky bucket or token bucket (like) algorithm.
-/// Tokens can be cosumed synchronously or asynchronously.
+/// Tokens can be consumed synchronously or asynchronously.
 /// Asynchronous consumption will block until a token is available, while synchronous consumption will return `false` if no tokens are available.
 /// Tasks blocked waiting for a token will be resumed in the order they were blocked (FIFO).
-/// - Note: This implementation internally floating point arithmetic and asynchronous functions, so it is not suitable for high precision timing. 
+/// - Note: This implementation internally uses floating point arithmetic and asynchronous functions, so it is not suitable for high precision timing. 
 public actor RateLimiter {
     /// The maximum number of tokens that can be held in the bucket. For a leaky bucket, this is always 1.
-    public var maxTokens: Int
+    public private(set) var maxTokens: Int
+    
     /// The rate at which tokens are regenerated, expressed in tokens per second.
-    public var tokenRate: Double
+    /// - Precondition: Must be greater than 0.
+    public private(set) var tokenRate: Double {
+        willSet { precondition(newValue > 0, "tokenRate must be greater than 0") }
+    }
     
     /// The number of tokens currently available in the bucket, not including tokens that may have been generated but not yet accounted for.
     /// This value is updated whenever tokens are regenerated.
@@ -139,7 +143,7 @@ public actor RateLimiter {
             if let nextTokenRegenerate = self.nextTokenRegenerate {
                 sleepDuration = max(nextTokenRegenerate.timeIntervalSince(.now), 0)
             }
-            try await Task.sleep(for: sleepDuration)
+            try await Task.sleep(for: .seconds(sleepDuration))
             self.regenerateTokens()
         } catch {}
     }
