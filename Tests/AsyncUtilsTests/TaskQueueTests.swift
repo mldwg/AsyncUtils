@@ -564,7 +564,8 @@ final class TaskQueueTests: XCTestCase {
         })
         // Let the init-time provider call settle before adding tasks.
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(await store.counter, 1)
+        let counter1 = await store.counter
+        XCTAssertEqual(counter1, 1)
 
         // Fill the single slot and create a two-task backlog.
         await self.queue.add { try? await Task.sleep(for: .milliseconds(200)) }
