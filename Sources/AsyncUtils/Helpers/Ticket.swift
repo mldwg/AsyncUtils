@@ -7,25 +7,25 @@
 
 import Foundation
 
-// Internally used class to represent a ticket for any asynchronous operation that requires a unique identifier.
-// Uses memory allocation to ensure that each instance is unique and can be used for identification purposes.
-internal final class Ticket: Identifiable, Hashable, Equatable {
+/// An opaque token that uniquely identifies a task added to a `TaskQueue`.
+/// Returned by `TaskQueue.add` and can be passed to `TaskQueue.cancel(_:)` to cancel that specific task.
+public final class Ticket: Identifiable, Hashable, Equatable {
 #if DEBUG
     private var debugID: UUID = UUID()
 #endif
     
-    static func == (lhs: Ticket, rhs: Ticket) -> Bool {
+    public static func == (lhs: Ticket, rhs: Ticket) -> Bool {
         return lhs.id == rhs.id
     }
-    
-    func hash(into hasher: inout Hasher) {
+
+    public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
 }
 
 #if DEBUG
 extension Ticket: CustomDebugStringConvertible {
-    var debugDescription: String {
+    public var debugDescription: String {
         return "Ticket(\(debugID.uuidString))"
     }
 }
