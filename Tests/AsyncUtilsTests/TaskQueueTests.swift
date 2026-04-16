@@ -114,7 +114,7 @@ final class TaskQueueTests: XCTestCase {
         
         let start1 = Date()
         // Try to cancel waitForAll while the queue has no free running slots (2 tasks running)
-        try await Task.withTimeout(cancelAfter: 0.05) {
+        try await Task.withTimeout(cancelAfter: .seconds(0.05)) {
             try? await self.queue.waitForAll()
         }
         let delta1 = Date().timeIntervalSince(start1)
@@ -124,7 +124,7 @@ final class TaskQueueTests: XCTestCase {
         
         let start2 = Date()
         // Try to cancel waitForAll while the queue has no free running slots (2 tasks running)
-        try await Task.withTimeout(cancelAfter: 0.05) {
+        try await Task.withTimeout(cancelAfter: .seconds(0.05)) {
             try? await self.queue.waitForAll()
         }
         let delta2 = Date().timeIntervalSince(start2)
@@ -132,7 +132,7 @@ final class TaskQueueTests: XCTestCase {
         
         let start3 = Date()
         // Try to cancel waitForAll while the queue has free running slots (1 tasks running)
-        try await Task.withTimeout(cancelAfter: 0.1) {
+        try await Task.withTimeout(cancelAfter: .seconds(0.1)) {
             try? await self.queue.waitForAll()
         }
         let delta3 = Date().timeIntervalSince(start3)
@@ -500,6 +500,128 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertLessThan(starts[0]!, cancellationTime)
         XCTAssertEqual(ends.count, 0)
         XCTAssertTrue(result.isCancellationResult)
+    }
+
+    // MARK: - TaskProvider Tests
+
+    /// Provider set in init fires as soon as all slots are free.
+    func testProviderCalledOnInit() async throws {
+        let store = TestingStorage()
+        self.queue = TaskQueue(maxConcurrentSlots: 1, taskProvider: { _ in
+            await store.incrementCounter()
+            return nil
+        })
+        try await Task.sleep(for: .milliseconds(50))
+        let count = await store.counter
+        XCTAssertEqual(count, 1)
+    }
+
+    /// A task returned by the provider is actually enqueued and executed.
+    func testProviderTaskIsExecuted() async throws {
+        let store = TestingStorage()
+        // isProviderActive serialises calls, so reading then incrementing counter is race-free.
+        self.queue = TaskQueue(maxConcurrentSlots: 1, taskProvider: { _ in
+            let alreadyProvided = await store.counter > 0
+            await store.incrementCounter()
+            guard !alreadyProvided else { return nil }
+            return TaskQueue.QueueableTask {
+                await store.started(0)
+                await store.ended(0)
+            }
+        })
+        try await Task.sleep(for: .milliseconds(100))
+        let ends = await store.ends
+        XCTAssertNotNil(ends[0])
+    }
+
+    /// With N free slots the provider is called in rapid succession until all slots are
+    /// filled or it returns nil, producing exactly N tasks.
+    func testProviderFillsAllFreeSlots() async throws {
+        let store = TestingStorage()
+        let slotCount = 3
+        // counter doubles as a unique task ID; provider returns a task for IDs 0..<slotCount.
+        self.queue = TaskQueue(maxConcurrentSlots: slotCount, taskProvider: { _ in
+            let id = await store.counter
+            guard id < slotCount else { return nil }
+            await store.incrementCounter()
+            return TaskQueue.QueueableTask {
+                await store.started(id)
+                await store.ended(id)
+            }
+        })
+        try await Task.sleep(for: .milliseconds(200))
+        let (starts, ends, _) = await store.data
+        XCTAssertEqual(starts.count, slotCount)
+        XCTAssertEqual(ends.count, slotCount)
+    }
+
+    /// Provider must not fire while there are tasks waiting in the explicit queue.
+    func testProviderNotCalledWhileExplicitQueueNonEmpty() async throws {
+        let store = TestingStorage()
+        self.queue = TaskQueue(maxConcurrentSlots: 1, taskProvider: { _ in
+            await store.incrementCounter()
+            return nil
+        })
+        // Let the init-time provider call settle before adding tasks.
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(await store.counter, 1)
+
+        // Fill the single slot and create a two-task backlog.
+        await self.queue.add { try? await Task.sleep(for: .milliseconds(200)) }
+        await self.queue.add { }
+        await self.queue.add { }
+
+        // Halfway through the slow task the backlog still exists; provider must stay silent.
+        try await Task.sleep(for: .milliseconds(100))
+        let counterMidway = await store.counter
+        XCTAssertEqual(counterMidway, 1)
+        try await self.queue.cancelAllAndWait()
+    }
+
+    /// After a provider-generated task finishes and a slot frees up, the provider is called again.
+    func testProviderRetriggeredAfterTaskCompletes() async throws {
+        let store = TestingStorage()
+        self.queue = TaskQueue(maxConcurrentSlots: 1, taskProvider: { _ in
+            let callNumber = await store.counter
+            await store.incrementCounter()
+            guard callNumber == 0 else { return nil }
+            return TaskQueue.QueueableTask {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        })
+        // Allow: init call (returns task) + post-completion call (returns nil).
+        try await Task.sleep(for: .milliseconds(200))
+        let providerCallCount = await store.counter
+        XCTAssertEqual(providerCallCount, 2)
+    }
+
+    /// waitForAll returns after explicitly-queued tasks are done even when the provider
+    /// subsequently generates long-running tasks.
+    func testWaitForAllDoesNotWaitForProviderTasksAddedAfter() async throws {
+        let store = TestingStorage()
+        // Provider returns nil until the explicit task has started (counter > 0),
+        // then yields a 10-second task that waitForAll must not block on.
+        self.queue = TaskQueue(maxConcurrentSlots: 1, taskProvider: { _ in
+            guard await store.counter > 0 else { return nil }
+            return TaskQueue.QueueableTask {
+                try? await Task.sleep(for: .seconds(10))
+            }
+        })
+        await self.queue.add {
+            await store.incrementCounter()   // arms the provider
+            await store.started(0)
+            try? await Task.sleep(for: .milliseconds(50))
+            await store.ended(0)
+        }
+        let start = Date()
+        try await self.queue.waitForAll()
+        let elapsed = Date().timeIntervalSince(start)
+
+        // Must return in roughly the explicit task's duration, not 10 s.
+        XCTAssertLessThan(elapsed, 1.0)
+        let ends = await store.ends
+        XCTAssertNotNil(ends[0])
+        await self.queue.cancelAll()
     }
 
     // MARK: - Bug regression tests
