@@ -15,35 +15,13 @@
 //
 
 import Foundation
-import DequeModule
 
 /// A Semaphore that allows asynchronous waiting and signaling, mimicking the behavior of a DispatchSemaphore.
 /// It supports cancellation of waiting tasks. 
 /// Waiting tasks are signaled in FIFO order in regards to when they were blocked.
 /// -Note: Using `.run` allows you to run an action while holding the semaphore, automatically signaling it after the action completes or if an error occurs.
 public actor AsyncSemaphore {
-    
-    /// Internal type to represent a task waiting for the semaphore.
-    internal struct BlockedWaiter: Sendable {
-        /// Flag to indicate if the waiter has been cancelled.
-        private(set) var isCancelled: Bool = false
-        /// Continuation to resume the waiting task when the semaphore is signaled.
-        /// This is set after the continuation is created.
-        var continuation: CheckedContinuation<Void, Error>?
-        
-        init(continuation: CheckedContinuation<Void, Error>? = nil) {
-            self.continuation = continuation
-        }
-        
-        /// Cancels the waiter, resuming the continuation with a CancellationError if it exists.
-        /// This method ensures that the waiter can only be cancelled once.
-        mutating func cancel() {
-            // ensure that we only cancel once
-            guard !isCancelled else { return }
-            isCancelled = true
-            continuation?.resume(throwing: CancellationError())
-        }
-    }
+    // MARK: Internals
     
     /// Current value of the semaphore, representing the number of available permits.
     /// - Important: In almost all cases, you should not to access this value, as doing so will only lead to race conditions.
@@ -57,7 +35,7 @@ public actor AsyncSemaphore {
     private var blockedWaiters: [Ticket: BlockedWaiter] = [:]
 
     /// A queue of tickets representing the blocked waiters. The queue is used to manage the order in which waiters are signaled when a permit becomes available.
-    private var queue: Deque<Ticket> = []
+    private var queue: TicketQueue = .init()
     
     public init(value: Int) {
         self.value = value
@@ -73,7 +51,9 @@ public actor AsyncSemaphore {
         blockedWaiters[ticket]?.cancel()
         blockedWaiters.removeValue(forKey: ticket)
     }
-    
+    // MARK: Wait
+
+
     /// Waits for a permit from the semaphore.
     /// If a permit is available, it decrements the value and returns immediately.
     /// If no permits are available, it blocks the current task until a permit is signaled.
@@ -82,37 +62,47 @@ public actor AsyncSemaphore {
     /// - Note: If the task calling this method is already cancelled at the moment of calling this method, the semaphore will not be waited on, and the method will throw a `CancellationError`.
     public func wait() async throws {
         try Task.checkCancellation()
-        
+
         guard value == 0 else {
             value -= 1
             return
         }
-        
+
         let ticket = Ticket()
         blockedWaiters[ticket] = .init()
-        
-        return try await withTaskCancellationHandler {
-            return try await withCheckedThrowingContinuation { continuation in
+
+        let _: Void = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
                 guard blockedWaiters[ticket]?.isCancelled == false else {
                     continuation.resume(throwing: CancellationError())
                     return
                 }
                 blockedWaiters[ticket]?.continuation = continuation
-                queue.append(ticket)
+                queue.enqueue(ticket)
             }
         } onCancel: {
             Task {
                 await self.cancelBlockedWaiter(ticket)
             }
         }
+
+        // If signal() raced with the cancellation handler and delivered the permit before
+        // cancelBlockedWaiter ran, the continuation was resumed successfully but the calling
+        // task is still cancelled. Give the permit back so it isn't lost, then throw.
+        if Task.isCancelled {
+            self.signal()
+            throw CancellationError()
+        }
     }
+
+    // MARK: Signal
     
     /// Signals the semaphore, waking up one waiting task if any are blocked, or incrementing the value if none are.
     /// - Returns: `true` if a waiting task was signaled, `false` if there were no waiting tasks.
     @discardableResult
     public func signal() -> Bool {
-        guard let firstTicket = queue.popFirst() else {
-            // No waiter — bank the permit so a future wait() can consume it.
+        guard let firstTicket = queue.dequeue() else {
+            // No waiter - bank the permit so a future wait() can consume it.
             value += 1
             return false
         }
@@ -128,6 +118,8 @@ public actor AsyncSemaphore {
         return true
     }
     
+    // MARK: Run
+
     /// Runs an asynchronous action while holding the semaphore.
     /// This method waits for a permit, executes the action, and signals the semaphore after the action completes or if an error occurs.
     /// - Parameter action: The asynchronous action to run while holding the semaphore.
@@ -135,14 +127,7 @@ public actor AsyncSemaphore {
     /// - Throws: Any error thrown by the action or a `CancellationError` if the task is cancelled while waiting.
     public func run<T>(_ action: () async throws -> T) async throws -> T {
         try await self.wait()
-       
-        do {
-            let result = try await action()
-            self.signal()
-            return result
-        } catch {
-            self.signal()
-            throw error
-        }
+        defer { self.signal() }
+        return try await action()
     }
 }

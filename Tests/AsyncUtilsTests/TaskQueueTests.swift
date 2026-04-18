@@ -27,11 +27,6 @@ final class TaskQueueTests: XCTestCase {
         self.queue = .init(maxConcurrentSlots: 3)
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
-    }
-
-    
     func testAdd() async throws {
         self.queue = .init(maxConcurrentSlots: 1)
         for _ in 0..<500 {
@@ -524,7 +519,7 @@ final class TaskQueueTests: XCTestCase {
             let alreadyProvided = await store.counter > 0
             await store.incrementCounter()
             guard !alreadyProvided else { return nil }
-            return TaskQueue.QueueableTask {
+            return QueueTask {
                 await store.started(0)
                 await store.ended(0)
             }
@@ -544,7 +539,7 @@ final class TaskQueueTests: XCTestCase {
             let id = await store.counter
             guard id < slotCount else { return nil }
             await store.incrementCounter()
-            return TaskQueue.QueueableTask {
+            return QueueTask {
                 await store.started(id)
                 await store.ended(id)
             }
@@ -586,7 +581,7 @@ final class TaskQueueTests: XCTestCase {
             let callNumber = await store.counter
             await store.incrementCounter()
             guard callNumber == 0 else { return nil }
-            return TaskQueue.QueueableTask {
+            return QueueTask {
                 try? await Task.sleep(for: .milliseconds(50))
             }
         })
@@ -594,6 +589,65 @@ final class TaskQueueTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         let providerCallCount = await store.counter
         XCTAssertEqual(providerCallCount, 2)
+    }
+
+    /// cancelQueued must not start additional tasks while it drains the queue.
+    func testCancelQueuedDoesNotStartNextQueuedTask() async throws {
+        self.queue = TaskQueue(maxConcurrentSlots: 3)
+        let gate = AsyncSemaphore(value: 0)
+
+        await self.queue.add(slots: 2) {
+            try? await gate.wait()
+        }
+
+        await self.queue.add(slots: 2) {
+            try? await gate.wait()
+        }
+
+        await self.queue.add(slots: 1) {
+            try? await gate.wait()
+        }
+
+        await self.queue.cancelQueued()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let counts = await self.queue.counts
+        XCTAssertEqual(counts, .init(queued: 0, running: 1))
+
+        await gate.signal()
+        await gate.signal()
+        try await Task.withTimeout(cancelAfter: .seconds(0.2)) {
+            try await self.queue.waitForAll()
+        }
+    }
+
+    /// cancelAll must cancel tasks that become runnable while cancelQueued is draining.
+    func testCancelAllCancelsTaskPromotedDuringCancelQueued() async throws {
+        self.queue = TaskQueue(maxConcurrentSlots: 3)
+        let gate = AsyncSemaphore(value: 0)
+
+        await self.queue.add(slots: 1) {
+            try? await gate.wait()
+        }
+
+        await self.queue.add(slots: 3) {
+            try? await gate.wait()
+        }
+
+        await self.queue.add(slots: 1) {
+            try? await gate.wait()
+        }
+
+        await self.queue.cancelAll()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let counts = await self.queue.counts
+        XCTAssertEqual(counts, .init(queued: 0, running: 0))
+
+        await gate.signal()
+        try await Task.withTimeout(cancelAfter: .seconds(0.2)) {
+            try await self.queue.waitForAll()
+        }
     }
 
     /// waitForAll returns after explicitly-queued tasks are done even when the provider
@@ -604,7 +658,7 @@ final class TaskQueueTests: XCTestCase {
         // then yields a 10-second task that waitForAll must not block on.
         self.queue = TaskQueue(maxConcurrentSlots: 1, taskProvider: { _ in
             guard await store.counter > 0 else { return nil }
-            return TaskQueue.QueueableTask {
+            return QueueTask {
                 try? await Task.sleep(for: .seconds(10))
             }
         })
@@ -627,15 +681,15 @@ final class TaskQueueTests: XCTestCase {
 
     // MARK: - Bug regression tests
 
-    /// QueueableTask.slots is hardcoded to 1; the init parameter is silently ignored.
-    func testQueueableTaskSlotsStoredCorrectly() {
-        let task1 = TaskQueue.QueueableTask(slots: 1) {}
+    /// QueueTask.slots is hardcoded to 1; the init parameter is silently ignored.
+    func testQueueTaskSlotsStoredCorrectly() {
+        let task1 = QueueTask(slots: 1) {}
         XCTAssertEqual(task1.slots, 1)
 
-        let task3 = TaskQueue.QueueableTask(slots: 3) {}
+        let task3 = QueueTask(slots: 3) {}
         XCTAssertEqual(task3.slots, 3)
 
-        let task5 = TaskQueue.QueueableTask(slots: 5) {}
+        let task5 = QueueTask(slots: 5) {}
         XCTAssertEqual(task5.slots, 5)
     }
 

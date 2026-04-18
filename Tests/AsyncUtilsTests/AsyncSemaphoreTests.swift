@@ -376,7 +376,7 @@ final class AsyncSemaphoreTests: XCTestCase {
     
     // Test that semaphore can limit the number of concurrent executions of
     // an async method, even when interactions with Swift concurrency runtime
-    // are (as much as possible) initiated from a single thread.
+    // are (as close in timing as possible) initiated from a single thread.
     func testResourceLimitingOnSingleTask() async {
         /// A class that limits the number of concurrent executions of
         /// its `run()` method, and counts the effective number of
@@ -475,6 +475,51 @@ final class AsyncSemaphoreTests: XCTestCase {
 
     // MARK: - Bug regression tests
 
+    /// Regression test: when signal() wins the race against the cancellation handler,
+    /// wait() must still throw CancellationError and return the permit to the semaphore.
+    ///
+    /// The race: onCancel queues a `Task { await cancelBlockedWaiter(...) }` on the actor,
+    /// but signal() may reach the actor first.  Without the fix, the cancelled waiter would
+    /// acquire the permit and return normally, leaking it.  With the fix, wait() detects
+    /// Task.isCancelled after resuming, calls signal() to return the permit, and re-throws.
+    ///
+    /// The test is probabilistic: many iterations are needed to reliably hit the race.
+    func testCancellationSignalRacePermitNotLost() async throws {
+        for _ in 0..<1000 {
+            let sem = AsyncSemaphore(value: 0)
+
+            let waitTask = Task<Bool, Never> {
+                do {
+                    try await sem.wait()
+                    return true  // wait() returned without throwing -> permit leak
+                } catch is CancellationError {
+                    return false
+                } catch {
+                    return false
+                }
+            }
+
+            // Let the task reach sem.wait() and fully suspend.
+            try await Task.sleep(for: .milliseconds(5))
+
+            // Cancel and signal concurrently -> race trigger.
+            // onCancel queues a cancel task on the actor, but the await below may
+            // deliver signal() to the actor first.
+            waitTask.cancel()
+            await sem.signal()
+
+            let waitSucceeded = await waitTask.value
+            XCTAssertFalse(waitSucceeded,
+                "wait() must not return normally on a cancelled task (permit leak)")
+
+            // The permit from signal() must remain recoverable regardless of race outcome.
+            let value = await sem.value
+            XCTAssertEqual(value, 1,
+                "Permit was lost: semaphore value should be 1 after cancel+signal")
+        }
+    }
+
+
     /// signal() always increments `value` even when it directly resumes a waiter.
     /// After signal wakes a suspended wait(), value should be 0, not 1.
     func testValueDoesNotInflateWhenSignalingWaiter() async throws {
@@ -519,7 +564,7 @@ final class AsyncSemaphoreTests: XCTestCase {
 
         try await Task.sleep(for: .seconds(0.1))
         let passed = await secondPassed.value
-        XCTAssertFalse(passed, "wait() should still be blocked — value must not have been inflated to 1")
+        XCTAssertFalse(passed, "wait() should still be blocked value must not have been inflated to 1")
         blocker.cancel()
     }
 }

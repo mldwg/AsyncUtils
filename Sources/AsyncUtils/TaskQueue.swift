@@ -15,59 +15,15 @@
 //
 
 import Foundation
-import DequeModule
 
 /// A task queue that can be used to run tasks concurrently with a maximum number of tasks running at the same time. Task are executed in the order they are added to the queue (FIFO).
-/// To provide more flexibility, tasks can be provided with a number of slots that they require. By default, a task requires 1 slot. Tasks will only be started if there are enough slots available. The TaskQueue will never violate FIFO order, so be careful when using slots to ensure that a task requiring more than 1 slot does not unintentionally block other tasks from being started. If you add a task with more slote than the maximum number of concurrent slots, it will never be started until the maximum number of concurrent slots is increased, effectively blocking the queue from processing any further tasks until the task is started or cancelled.
+/// To provide more flexibility, tasks can be provided with a number of slots that they require. By default, a task requires 1 slot. Tasks will only be started if there are enough slots available. The TaskQueue will never violate FIFO order, so be careful when using slots to ensure that a task requiring more than 1 slot does not unintentionally block other tasks from being started. If you add a task with equal to or more slots than the maximum number of concurrent slots, it will never be started until the maximum number of concurrent slots is increased, effectively blocking the queue from processing any further tasks until the task is started or cancelled.
 /// An optional `taskProvider` closure can be supplied to generate work on demand. It is called whenever the queue is empty and at least one concurrent slot is available, allowing the queue to pull new tasks rather than requiring them to be pushed.
 /// - Note: The TaskQueue is an actor, so it is thread-safe and can be used from multiple threads without any additional synchronization.
 public actor TaskQueue {
     
-    // MARK: QueueableTask
 
-    /// A task that can be added to the queue. The task can be provided with an ID to prevent duplicate tasks from being added to the queue.
-    public struct QueueableTask {
-
-        /// The closure that contains the work that the task should perform.
-        /// - Note: Never set this variable on any QueueableTask instance that was not guaranteed to be isolated to the actor (e.g., may have been created outside of the actor).
-        public fileprivate(set) var closure: @Sendable () async -> Void
-        
-        /// The priority of the task. If nil, the default priority of the task queue is used.
-        public let taskPriority: TaskPriority?
-        
-        /// The number of slots that the task requires. By default, a task requires 1 slot. If a task requires more than 1 slot, it will only be started if there are enough slots available.
-        public let slots: Int
-        
-        /// A closure that can be called to cancel the continuation that is waiting for the task to finish. Since this closure resumes a continuation, it should only be called once.
-        fileprivate var continuationCancelClosure: (@Sendable () -> Void)?
-        
-        /// A flag that indicates whether the task has been cancelled. This is used to prevent the task from being started if it has already been cancelled.
-        fileprivate(set) var isCancelled: Bool = false
-
-        /// A flag that indicates whether the continuation has been resumed. This is used to prevent the continuation from being resumed multiple times.
-        fileprivate(set) var continuationResumed: Bool = false
-
-        /// Initializes a new queueable task.
-        /// - Parameters: slots: The number of slots that the task requires. By default, a task requires 1 slot.
-        /// - Parameters: taskPriority: The priority of the task. If nil, the default priority of the task queue is used.
-        /// - Parameters: closure: The closure that contains the work that the task should perform.
-        public init(slots: Int = 1, taskPriority: TaskPriority? = nil, closure: @Sendable @escaping () async -> Void) {
-            self.slots = slots
-            self.taskPriority = taskPriority
-            self.closure = closure
-        }
-        
-        /// Cancels the task. If the task has already been cancelled, this method does nothing.
-        /// If the task has a continuation that has not been marked as resumed, the continuation is resumed with a CancellationError.
-        fileprivate mutating func cancel() {
-            guard !isCancelled else { return }
-            isCancelled = true
-            if !continuationResumed, let continuationCancelClosure {
-                continuationCancelClosure()
-                continuationResumed = true
-            }
-        }
-    }
+    // QueueTicket is defined as a top-level type below TaskQueue.
 
     // MARK: Internals
     
@@ -80,10 +36,10 @@ public actor TaskQueue {
     }
     
     /// The queue that holds the tasks that are waiting to be executed. Used to maintain the order of the tasks.
-    private var queue: Deque<Ticket> = .init()
+    private var queue: TicketQueue = .init()
 
     /// A map that holds the task IDs of the tasks that are currently in the queue. Used to prevent duplicate tasks from being added to the queue.
-    private var tasks: [Ticket: QueueableTask] = [:]
+    private var queueTasks: [Ticket: QueueTask] = [:]
 
     /// A map that holds the tasks that are currently running. Used to keep track of the running tasks.
     private var runningTasks: [Ticket: RunningTask] = .init()
@@ -93,11 +49,11 @@ public actor TaskQueue {
 
     /// An optional closure that is called on-demand to supply work whenever the explicit queue is empty and at least one slot is free.
     /// The closure receives the current number of free slots and may return a task to enqueue, or `nil` if no work is available right now.
-    /// Invocations are serialized — the closure is never called concurrently with itself. Once it returns, it will be called again
+    /// Invocations are serialized - the closure is never called concurrently with itself. Once it returns, it will be called again
     /// as long as the queue remains empty and free slots are available.
     /// - Note: `waitForAll()` only waits for tasks that were already queued or running at the time of the call. Tasks generated by
     ///   the provider after `waitForAll()` begins are not included in that wait.
-    public var taskProvider: ((_ freeSlots: Int) async -> QueueableTask?)? {
+    public private(set) var taskProvider: ((_ freeSlots: Int) async -> QueueTask?)? {
         didSet { triggerProviderIfNeeded() }
     }
 
@@ -105,7 +61,7 @@ public actor TaskQueue {
     private var isProviderActive: Bool = false
 
     /// The priority of the tasks that are executed.
-    public var defaultTaskPriority: TaskPriority?
+    public private(set) var defaultTaskPriority: TaskPriority?
     
     // MARK: Counts
 
@@ -163,7 +119,7 @@ public actor TaskQueue {
     
     /// The maximum number of tasks that can run concurrently. If this number is lowered while tasks are running, currently running tasks are not canceled. If this number is increased, the queue will start new tasks immediately if there are tasks in the queue that can be started.
     /// - Precondition: The maximum number of concurrent slots must be greater than 0.
-    public var maxConcurrentSlots: Int = 1 {
+    public private(set) var maxConcurrentSlots: Int = 1 {
         didSet {
             self.startNextTasks()
         }
@@ -177,7 +133,7 @@ public actor TaskQueue {
     ///   - defaultTaskPriority: The priority used for tasks that do not specify their own priority.
     ///   - taskProvider: An optional closure called on-demand to supply work when the queue is empty and slots are free.
     /// - Precondition: The maximum number of concurrent slots must be greater than 0.
-    public init(maxConcurrentSlots: Int = 1, defaultTaskPriority: TaskPriority? = nil, taskProvider: ((_ freeSlots: Int) async -> QueueableTask?)? = nil) {
+    public init(maxConcurrentSlots: Int = 1, defaultTaskPriority: TaskPriority? = nil, taskProvider: ((_ freeSlots: Int) async -> QueueTask?)? = nil) {
         precondition(maxConcurrentSlots > 0, "Maximum number of concurrent slots must be greater than 0.")
 
         self.maxConcurrentSlots = maxConcurrentSlots
@@ -185,7 +141,7 @@ public actor TaskQueue {
         self.taskProvider = taskProvider
         // didSet does not fire during init, so trigger manually if a provider was supplied.
         // init is nonisolated, so the Task does not inherit the actor's executor.
-        // Awaiting a synchronous actor-isolated method from outside the actor is valid Swift —
+        // Awaiting a synchronous actor-isolated method from outside the actor is valid Swift -
         // the await represents the actor hop, not any async work inside the method.
         if taskProvider != nil {
             Task { [self] in await self.triggerProviderIfNeeded() }
@@ -202,7 +158,7 @@ public actor TaskQueue {
 
     /// Sets the task provider for the queue. The provider is called whenever the queue is empty and at least one slot is free, allowing the queue to pull new tasks rather than requiring them to be pushed.
     /// - Parameter taskProvider: An optional closure called on-demand to supply work when the queue is empty and slots are free. The closure receives the current number of free slots and may return a task to enqueue, or `nil` if no work is available right now.
-    public func setTaskProvider(_ taskProvider: ((_ freeSlots: Int) async -> QueueableTask?)?) {
+    public func setTaskProvider(_ taskProvider: ((_ freeSlots: Int) async -> QueueTask?)?) {
         self.taskProvider = taskProvider
     }
     
@@ -221,7 +177,7 @@ public actor TaskQueue {
     private func startNextTask() -> Bool {
         // Retrieve next task from the queue if there is one
         guard let ticket = queue.first else { return false }
-        guard let task = tasks[ticket] else {
+        guard let task = queueTasks[ticket] else {
             preconditionFailure("Task Ticket not found.")
         }
         
@@ -230,7 +186,7 @@ public actor TaskQueue {
         
         let taskPriority = task.taskPriority ?? defaultTaskPriority
         runningTasks[ticket] = .init(slots: task.slots, task: Task(priority: taskPriority, operation: task.closure))
-        queue.removeFirst()
+        queue.dequeue()
         return true
     }
     
@@ -259,12 +215,12 @@ public actor TaskQueue {
 
     /// Called when `taskProvider` returns. Resets the active flag, enqueues the returned task if any,
     /// then re-checks whether the provider should be called again for remaining free slots.
-    private func handleProviderResult(_ providerTask: QueueableTask?) {
+    private func handleProviderResult(_ providerTask: QueueTask?) {
         isProviderActive = false
         guard let providerTask else { return }
         // `add` wraps the closure and calls `startNextTasks` internally.
         // Reset isProviderActive *before* calling add so that the startNextTasks
-        // → triggerProviderIfNeeded path inside add can schedule the next provider
+        //->triggerProviderIfNeeded path inside add can schedule the next provider
         // call for any remaining free slots.
         add(providerTask)
     }
@@ -281,12 +237,12 @@ public actor TaskQueue {
     
     /// Registers a new task with the given number of slots. This is used to create a ticket for a task that can be added to the queue later.
     /// - Parameters: slots: The number of slots that the task requires. 
-    /// - Returns: A Ticket under which the task is registered. This ticket can be used to access the task later, e.g., to cancel it or to wait for it to finish.
-    private func registerTask(slots: Int) -> Ticket {
+    /// - Returns: A QueueTicket under which the task is registered. This ticket can be used to access the task later, e.g., to cancel it or to wait for it to finish.
+    private func registerTask(slots: Int) -> QueueTicket {
         let ticket = Ticket()
-        tasks[ticket] = .init(slots: slots) {
+        queueTasks[ticket] = .init(slots: slots) {
         }
-        return ticket
+        return QueueTicket(.init(ticket: ticket))
     }
 
     // MARK: Task Completion
@@ -301,7 +257,7 @@ public actor TaskQueue {
         // Remove the task from the running tasks
         runningTasks.removeValue(forKey: ticket)
 
-        if let task = tasks.removeValue(forKey: ticket), !task.continuationResumed {
+        if let task = queueTasks.removeValue(forKey: ticket), !task.continuationResumed {
             // Resume the continuation if it has not been resumed yet
             continuationResume()
         }
@@ -319,59 +275,87 @@ public actor TaskQueue {
 
     // MARK: Task Cancellation
     
-    /// Cancels the task identified by the given ticket.
+    /// Cancels the task identified by the given ticket if it is not queued. Will cause inconsistent state if the task is still queued, so this method should only be used for tasks that are known to have already been started.
+    /// - Parameter ticket: The ticket of the task to cancel.
+    /// - Note: Cancellation is cooperative - a running task must check for cancellation itself (e.g. via `Task.checkCancellation()`) to stop early.
+    private func cancelDequeuedTask(_ ticket: Ticket) {
+        runningTasks[ticket]?.task.cancel()
+        
+        // Cancel the task and remove it from the tasks map
+        queueTasks[ticket]?.cancel()
+
+        if queueTasks[ticket]?.continuationResumed == true {
+            // If the continuation has been resumed, we no longer need to keep the task in the tasks map
+            queueTasks.removeValue(forKey: ticket)
+        }
+    }
+    
+    /// Cancels the task identified by the given QueueTicket.
     /// If the task is still queued, it is removed before it starts. If it is already running, the underlying `Task` is cancelled.
+    /// The queue is then advanced, which may start other queued tasks or trigger `taskProvider` if capacity becomes available.
     /// - Parameter ticket: The ticket returned by `add` when the task was enqueued.
-    /// - Note: Cancellation is cooperative — a running task must check for cancellation itself (e.g. via `Task.checkCancellation()`) to stop early.
-    public func cancel(_ ticket: Ticket) {
+    /// - Parameter startNext: Whether to start the next tasks in the queue after cancellation. This should usually be true to ensure that the queue continues to process tasks, but can be set to false if you want to cancel multiple tasks in a row without starting any of them until all cancellations are done.
+    /// - Note: Even if startNext is set to false, the cancellation of a running task will still invoke `completedTask`, which may invoke the start of queued tasks or trigger the provider. However, this is done asynchronously, so setting startNext to false can still be used to ensure that the queue does not synchronously start new tasks before multiple cancellations are processed. If you want to synchronously cancel multiple tasks without starting any of them, you can set startNext to false for all cancellations, and then call `startNextTasks()` manually after all cancellations are done.
+    /// - Note: Cancellation is cooperative - a running task must check for cancellation itself (e.g. via `Task.checkCancellation()`) to stop early.
+    private func cancel(_ queueTicket: QueueTicket, startNext: Bool) {
 
         // Remove the task from the queue or running tasks
-        if let queueIndex = queue.firstIndex(of: ticket) {
-            queue.remove(at: queueIndex)
-        } else {
-            runningTasks[ticket]?.task.cancel()
+        if queue.isEnqueued(queueTicket.node) {
+            queue.remove(queueTicket.node)
         }
-
-        // Cancel the task and remove it from the tasks map
-        tasks[ticket]?.cancel()
-
-        if tasks[ticket]?.continuationResumed == true {
-            // If the continuation has been resumed, we no longer need to keep the task in the tasks map
-            tasks.removeValue(forKey: ticket)
+        
+        cancelDequeuedTask(queueTicket.ticket)
+        queueTasks.removeValue(forKey: queueTicket.ticket)
+        if startNext {
+            startNextTasks()
         }
+    }
+    
+    /// Cancels the task identified by the given QueueTicket.
+    /// If the task is still queued, it is removed before it starts. If it is already running, the underlying `Task` is cancelled.
+    /// - Parameter ticket: The ticket returned by `add` when the task was enqueued.
+    /// - Note: Cancellation is cooperative - a running task must check for cancellation itself (e.g. via `Task.checkCancellation()`) to stop early.
+    public func cancel(_ queueTicket: QueueTicket) {
+        cancel(queueTicket, startNext: true)
     }
 
     // MARK: Adding Tasks
+
+        /// Adds a task to the queue. 
+    /// - Parameters: task: The task that is added to the queue.
+    /// - Parameters: queueTicket: The QueueTicket under which the task is registered. This ticket can be used to access the task later, e.g., to cancel it or to wait for it to finish.
+    /// - Note: If a task with the same ticket is already in the queue, it is replaced by the new task.
+    private func add(_ task: QueueTask, with queueTicket: QueueTicket) {
+        queueTasks[queueTicket.ticket] = task
+        queue.enqueue(node: queueTicket.node)
+        startNextTasks()
+    }
     
     /// Adds a task to the queue. 
     /// - Parameters: task: The task that is added to the queue.
     /// - Parameters: ticket: The ticket under which the task is registered. This ticket can be used to access the task later, e.g., to cancel it or to wait for it to finish.
-    /// - Parameters: insertAt: The index at which the task should be inserted in the queue. If nil, the task is added to the end of the queue.
     /// - Note: If a task with the same ticket is already in the queue, it is replaced by the new task.
-    private func add(_ task: QueueableTask, with ticket: Ticket, insertAt: Int? = nil) {
-        tasks[ticket] = task
-        if let insertAt {
-            queue.insert(ticket, at: min(queue.endIndex, insertAt))
-        } else {
-            queue.append(ticket)
-        }
+    private func add(_ task: QueueTask, with ticket: Ticket) -> QueueTicket {
+        queueTasks[ticket] = task
+        let node = queue.enqueue(ticket)
         startNextTasks()
+        return QueueTicket(node)
     }
     
+    
     /// Adds a task to the queue.
-    /// - Parameter queueableTask: The task to enqueue.
+    /// - Parameter QueueTask: The task to enqueue.
     /// - Returns: A `Ticket` that can be passed to `cancel(_:)` to cancel this specific task.
     @discardableResult
-    public func add(_ queueableTask: QueueableTask) -> Ticket {
-        let closure = queueableTask.closure
-        var queueableTask = queueableTask
+    public func add(_ queueTask: QueueTask) -> QueueTicket {
+        let closure = queueTask.closure
+        var queueTask = queueTask
         let ticket = Ticket()
-        queueableTask.closure = { @Sendable in
+        queueTask.closure = { @Sendable in
             await closure()
             await self.completedTask(ticket)
         }
-        add(queueableTask, with: ticket)
-        return ticket
+        return add(queueTask, with: ticket)
     }
 
     /// Adds a task to the queue.
@@ -380,14 +364,13 @@ public actor TaskQueue {
     ///   - closure: The work to perform.
     /// - Returns: A `Ticket` that can be passed to `cancel(_:)` to cancel this specific task.
     @discardableResult
-    public func add(slots: Int = 1, _ closure: @Sendable @escaping () async -> Void) -> Ticket {
+    public func add(slots: Int = 1, _ closure: @Sendable @escaping () async -> Void) -> QueueTicket {
         let ticket = Ticket()
         let wrappedClosure = { @Sendable in
             await closure()
             await self.completedTask(ticket)
         }
-        add(.init(slots: slots, closure: wrappedClosure), with: ticket)
-        return ticket
+        return add(.init(slots: slots, closure: wrappedClosure), with: ticket)
     }
     
     /// Adds a task to the queue and waits for it to finish.
@@ -402,7 +385,7 @@ public actor TaskQueue {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 // Retrieve the task and check if it is still valid (not cancelled)
-                guard var task = tasks[ticket], !task.isCancelled else {
+                guard var task = queueTasks[ticket.ticket], !task.isCancelled else {
                     // If the task could not be retrieved (i.e. cancelled) or is cancelled, immediately resume the continuation with a CancellationError
                     continuation.resume(throwing: CancellationError())
                     return
@@ -415,7 +398,7 @@ public actor TaskQueue {
                 // This closure also handles resolving the continuation when the task is completed and notifies the TaskQueue that the task is completed.
                 task.closure = {
                     let result = await closure()
-                    await self.completedTask(ticket) {
+                    await self.completedTask(ticket.ticket) {
                         continuation.resume(returning: result)
                     }
                 }
@@ -441,7 +424,7 @@ public actor TaskQueue {
         
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                guard var task = tasks[ticket], !task.isCancelled else {
+                guard var task = queueTasks[ticket.ticket], !task.isCancelled else {
                     // If the task could not be retrieved (i.e. cancelled) or is cancelled, immediately resume the continuation with a CancellationError
                     continuation.resume(throwing: CancellationError())
                     return
@@ -455,11 +438,11 @@ public actor TaskQueue {
                 task.closure = {
                     do {
                         let result = try await closure()
-                        await self.completedTask(ticket) {
+                        await self.completedTask(ticket.ticket) {
                             continuation.resume(returning: result)
                         }
                     } catch {
-                        await self.completedTask(ticket) {
+                        await self.completedTask(ticket.ticket) {
                             continuation.resume(throwing: error)
                         }
                     }
@@ -479,11 +462,11 @@ public actor TaskQueue {
     // MARK: Waiting
 
     /// Blocks until all tasks that are currently queued or running finish or are cancelled.
+    /// 
+    /// - Important: Do not call this method from within a task that is running in the queue, as this will cause a deadlock. This method should only be called from outside of the queue, e.g., from another actor or from a nonisolated context.
+    /// - Note: Tasks produced by `taskProvider` after this call begins are not included in the wait.
     /// - Throws: A CancellationError on cancellation.
-    public func waitForAll() async throws {
-        // Store all tasks that we want to wait for
-        let tasksAhead = allTickets()
-        
+    private func waitFor(_ tickets: [Ticket]) async throws {
         // Wait until a task slot opens (i.e. all tasks ahead are either running or completed)
         try await addAndWait {}
         
@@ -494,35 +477,127 @@ public actor TaskQueue {
         defer { waitForAllSemaphores[semaphoreTicket] = nil }
         
         // Check if there are any remaining tasks that are currently running
-        let remainingRunningTasks = Set(tasksAhead).intersection(runningTasks.keys)
+        let remainingRunningTasks = Set(tickets).intersection(runningTasks.keys)
         while !remainingRunningTasks.intersection(runningTasks.keys).isEmpty {
             // If there are any remaining running tasks, wait for the semaphore to be signaled. The semaphore will be signaled when a task is completed. After that, we check again if there are any remaining running tasks.
             // This will continue until all tasks are completed.
             try await semaphore.wait()
         }
     }
+
+    /// Blocks until all tasks that are currently queued or running finish or are cancelled.
+    /// 
+    /// - Important: Do not call this method from within a task that is running in the queue, as this will cause a deadlock. This method should only be called from outside of the queue, e.g., from another actor or from a nonisolated context.
+    /// - Throws: A CancellationError on cancellation.
+    public func waitForAll() async throws {
+        // Store all tasks that we want to wait for
+        let waitForTickets = allTickets()
+        try await waitFor(waitForTickets)
+    }
     
     /// Cancels all tasks that are currently queued but not running. Already running tasks are not canceled.
+    /// 
+    /// - Note: After queued tasks are removed, the queue is advanced. This may start new work from `taskProvider` if free slots are available.
     public func cancelQueued() {
-        while let ticket = queue.first {
-            cancel(ticket)
+        let stopAfterNode = queue.tail
+        while let ticket = queue.head {
+            cancel(.init(ticket), startNext: false)
+            if ticket === stopAfterNode {
+                break
+            }
         }
+        startNextTasks()
     }
     
-    /// Cancels all tasks that are currently queued or running.
-    /// - Note: Since cancelling is cooperative, not all running tasks might be canceled immediately.  The function does *not* wait for all tasks to complete their cancellation.
+    /// Cancels all explicitly queued tasks and all tasks running at the time of the call.
+    /// 
+    /// - Note: Since cancelling is cooperative, not all running tasks might be canceled immediately. The function does *not* wait for all tasks to complete their cancellation.
+    /// - Note: Provider-generated tasks may start after this call advances the queue and are not automatically cancelled by this invocation.
     public func cancelAll() {
+        // Only wait for the currently running tasks as queued tasks are removed immediately and not relevant for the wait.
+        let runningTaskTickets = self.runningTasks.keys
         cancelQueued()
-        for ticket in self.runningTasks.keys {
-            cancel(ticket)
+        for ticket in runningTaskTickets {
+            cancelDequeuedTask(ticket)
         }
+        startNextTasks()
     }
     
-    /// Cancels all tasks that are currently queued or running and wait for them to complete.
+    /// Cancels all explicitly queued tasks and all tasks running at the time of the call, then waits for those running tasks to complete.
+    /// 
+    /// - Important: Do not call this method from within a task that is running in the queue, as this will cause a deadlock. This method should only be called from outside of the queue, e.g., from another actor or from a nonisolated context.
     /// - Throws: A CancellationError on cancellation.
-    /// - Note: Since cancelling is cooperative, not all running tasks might be canceled immediately. The function waits for all tasks to complete their cancellation.
+    /// - Note: Since cancelling is cooperative, not all running tasks might be canceled immediately.
+    /// - Note: Tasks started after this call begins (for example from `taskProvider`) are not included in the wait.
     public func cancelAllAndWait() async throws {
+        let waitForTickets = Array(self.runningTasks.keys)
         cancelAll()
-        try await waitForAll()
+        try await waitFor(waitForTickets)
+    }
+}
+
+// MARK: QueueTask
+
+/// A task that can be added to the queue. The task can be provided with an ID to prevent duplicate tasks from being added to the queue.
+public struct QueueTask {
+
+    /// The closure that contains the work that the task should perform.
+    /// - Note: Never set this variable on any QueueTask instance that was not guaranteed to be isolated to the actor (e.g., may have been created outside of the actor).
+    public fileprivate(set) var closure: @Sendable () async -> Void
+    
+    /// The priority of the task. If nil, the default priority of the task queue is used.
+    public let taskPriority: TaskPriority?
+    
+    /// The number of slots that the task requires. By default, a task requires 1 slot. If a task requires more than 1 slot, it will only be started if there are enough slots available.
+    public let slots: Int
+    
+    /// A closure that can be called to cancel the continuation that is waiting for the task to finish. Since this closure resumes a continuation, it should only be called once.
+    fileprivate var continuationCancelClosure: (@Sendable () -> Void)?
+    
+    /// A flag that indicates whether the task has been cancelled. This is used to prevent the task from being started if it has already been cancelled.
+    fileprivate(set) var isCancelled: Bool = false
+
+    /// A flag that indicates whether the continuation has been resumed. This is used to prevent the continuation from being resumed multiple times.
+    fileprivate(set) var continuationResumed: Bool = false
+
+    /// Initializes a new queueable task.
+    /// - Parameters: slots: The number of slots that the task requires. By default, a task requires 1 slot.
+    /// - Parameters: taskPriority: The priority of the task. If nil, the default priority of the task queue is used.
+    /// - Parameters: closure: The closure that contains the work that the task should perform.
+    public init(slots: Int = 1, taskPriority: TaskPriority? = nil, closure: @Sendable @escaping () async -> Void) {
+        precondition(slots > 0, "QueueTask must require at least 1 slot.")
+        self.slots = slots
+        self.taskPriority = taskPriority
+        self.closure = closure
+    }
+    
+    /// Cancels the task. If the task has already been cancelled, this method does nothing.
+    /// If the task has a continuation that has not been marked as resumed, the continuation is resumed with a CancellationError.
+    fileprivate mutating func cancel() {
+        guard !isCancelled else { return }
+        isCancelled = true
+        if !continuationResumed, let continuationCancelClosure {
+            continuationCancelClosure()
+            continuationResumed = true
+        }
+    }
+}
+
+// MARK: - QueueTicket
+
+/// An opaque token representing a task that has been added to a `TaskQueue`.
+/// Returned by `TaskQueue.add` - pass it to `TaskQueue.cancel(_:)` to cancel
+/// that specific task before or while it runs.
+public final class QueueTicket: @unchecked Sendable {
+    /// The underlying queue node. Kept internal so `TicketQueue` stays internal.
+    internal let node: TicketQueue.Node
+
+    internal init(_ node: TicketQueue.Node) {
+        self.node = node
+    }
+
+    // The ticket associated with this queued task. Used internally for cancellation and tracking.
+    internal var ticket: Ticket {
+        node.ticket
     }
 }

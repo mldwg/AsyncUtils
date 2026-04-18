@@ -15,7 +15,6 @@
 //
 
 import Foundation
-import DequeModule
 
 /// A rate limiter that allows you to control the rate of actions in your application using a leaky bucket or token bucket (like) algorithm.
 /// Tokens can be consumed synchronously or asynchronously.
@@ -23,6 +22,8 @@ import DequeModule
 /// Tasks blocked waiting for a token will be resumed in the order they were blocked (FIFO).
 /// - Note: This implementation internally uses floating point arithmetic and asynchronous functions, so it is not suitable for high precision timing. 
 public actor RateLimiter {
+    // MARK: Internals
+
     /// The maximum number of tokens that can be held in the bucket. For a leaky bucket, this is always 1.
     public private(set) var maxTokens: Int
     
@@ -34,7 +35,7 @@ public actor RateLimiter {
     
     /// The number of tokens currently available in the bucket, not including tokens that may have been generated but not yet accounted for.
     /// This value is updated whenever tokens are regenerated.
-    private var tokensInBucket: Int
+    var tokensInBucket: Int
 
     /// The last time tokens were regenerated.
     /// This is used to calculate how many tokens should be available at the current time.
@@ -45,9 +46,6 @@ public actor RateLimiter {
     /// It can be `nil` if the bucket is full or has never generated tokens yet.
     private var nextTokenRegenerate: Date?
     
-    /// Since `RateLimiter` shares many similarities with `AsyncSemaphore`, we can use the same `BlockedWaiter` type.
-    typealias BlockedWaiter = AsyncSemaphore.BlockedWaiter
-    
     /// All current blocked waiters, indexed by their ticket.
     /// This dictionary maps each `Ticket` to its corresponding `BlockedWaiter`.
     /// - Note: This is used to manage the waiters and their continuations.
@@ -55,7 +53,7 @@ public actor RateLimiter {
     private var blockedWaiters: [Ticket: BlockedWaiter] = [:]
 
     /// A queue of tickets representing the blocked waiters. The queue is used to manage the order in which waiters are signaled when a permit becomes available.
-    private var queue: Deque<Ticket> = []
+    private var queue: TicketQueue = .init()
 
     /// A task that is responsible for regenerating tokens at the specified rate.
     /// This task runs in the background and is scheduled to run when there are blocked waiters.
@@ -90,6 +88,8 @@ public actor RateLimiter {
         self.lastTokenRegenerate = .now
     }
     
+    // MARK: Regeneration
+
     /// Regenerates tokens based on the elapsed time since the last regeneration.
     /// This method calculates how many tokens should be available based on the time elapsed and the token regeneration rate.
     /// If there are blocked waiters, it will resume them in the order they were blocked.
@@ -108,7 +108,7 @@ public actor RateLimiter {
         if additionalTokensToRegenerate > 0  {
             
             // While there are additional tokens to regenerate, we will resume blocked waiters.
-            while additionalTokensToRegenerate > 0, let nextTicket = queue.popFirst() {
+            while additionalTokensToRegenerate > 0, let nextTicket = queue.dequeue() {
                 blockedWaiters.removeValue(forKey: nextTicket)?.continuation?.resume()
                 additionalTokensToRegenerate -= 1
             }
@@ -139,9 +139,15 @@ public actor RateLimiter {
     /// It sleeps until the next token regeneration time and then regenerates tokens.
     private func executeScheduledRegeneration() async {
         do {
-            var sleepDuration = 1/self.tokenRate
-            if let nextTokenRegenerate = self.nextTokenRegenerate {
+            let sleepDuration: TimeInterval
+            if let nextTokenRegenerate {
                 sleepDuration = max(nextTokenRegenerate.timeIntervalSince(.now), 0)
+            } else {
+                // nextTokenRegenerate is nil when the bucket was last full.
+                // Sleep only for the *remaining* time to the next token rather than
+                // a full 1/tokenRate from now, which would overshoot by however long
+                // ago the bucket was drained.
+                sleepDuration = max(lastTokenRegenerate.addingTimeInterval(1/tokenRate).timeIntervalSince(.now), 0)
             }
             try await Task.sleep(for: .seconds(sleepDuration))
             self.regenerateTokens()
@@ -163,6 +169,8 @@ public actor RateLimiter {
             }
         }
     }
+
+    // MARK: Consumption
     
     /// Consumes a token from the rate limiter if available.
     /// - Returns `true` if a token was successfully consumed, `false` if no tokens are available.
@@ -177,13 +185,15 @@ public actor RateLimiter {
     
     /// Attempts to consume a token from the rate limiter, throwing an error if no tokens are available.
     /// - Throws: `RateLimiterError.exceededRateLimit` if no tokens are available.
-    public func tryConsumeToken() throws(RateLimiterError) {
+    public func tryConsumeToken() throws(RateLimitExceededError) {
         regenerateTokens()
         guard tokensInBucket > 0 else {
-            throw RateLimiterError.exceededRateLimit
+            throw RateLimitExceededError()
         }
         tokensInBucket -= 1
     }
+
+    // MARK: Blocking Consumption
     
     /// Handles cancellation of a blocked waiter.
     /// This method removes the waiter from the queue and cancels its continuation.
@@ -210,7 +220,7 @@ public actor RateLimiter {
         let ticket = Ticket()
         blockedWaiters[ticket] = .init()
         
-        return try await withTaskCancellationHandler {
+        let _: Void = try await withTaskCancellationHandler {
             return try await withCheckedThrowingContinuation { continuation in
                 // If the waiter has already been cancelled, we throw a CancellationError.
                 guard blockedWaiters[ticket]?.isCancelled == false else {
@@ -220,7 +230,7 @@ public actor RateLimiter {
                 // Otherwise, we set the continuation for the blocked waiter and add it to the queue.
                 // The continuation will be resumed when by the `regenerateTokens` method when a token becomes available.
                 blockedWaiters[ticket]?.continuation = continuation
-                queue.append(ticket)
+                queue.enqueue(ticket)
                 regenerateTokens()
             }
         } onCancel: {
@@ -228,10 +238,16 @@ public actor RateLimiter {
                 await self.cancelBlockedWaiter(ticket)
             }
         }
+
+        // If the regeneration task raced with the cancellation handler and delivered
+        // a token before cancelBlockedWaiter ran, return the token to the bucket and throw.
+        if Task.isCancelled {
+            tokensInBucket += 1
+            throw CancellationError()
+        }
     }
 }
 
 
-public enum RateLimiterError: Error, Sendable {
-    case exceededRateLimit
+public struct RateLimitExceededError: Error, Sendable {
 }
