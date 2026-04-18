@@ -12,15 +12,11 @@ let package = Package(
             name: "AsyncUtils",
             targets: ["AsyncUtils"]),
     ],
-    dependencies: [
-        .package(url: "https://github.com/apple/swift-collections", .upToNextMajor(from: "1.0.0")),
-    ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "AsyncUtils",
-            dependencies: [.product(name: "DequeModule", package: "swift-collections")]),
+            name: "AsyncUtils"),
         .testTarget(
             name: "AsyncUtilsTests",
             dependencies: ["AsyncUtils"]),

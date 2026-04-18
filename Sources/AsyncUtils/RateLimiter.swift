@@ -249,5 +249,6 @@ public actor RateLimiter {
 }
 
 
+/// An error thrown when an attempt is made to consume a token from the rate limiter but no tokens are available.
 public struct RateLimitExceededError: Error, Sendable {
 }

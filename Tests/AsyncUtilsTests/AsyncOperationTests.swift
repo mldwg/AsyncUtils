@@ -113,7 +113,7 @@ final class AsyncOperationTests: XCTestCase {
             "cancel() must fire isCancelled KVO exactly once, not twice")
     }
 
-    /// Regression: finish() has no guard against double-calls - a second call fires
+    /// Regression: finish() has no guard against double-calls. A second call fires
     /// spurious isExecuting and isFinished KVO notifications on an already-finished
     /// operation, which can confuse NSOperationQueue.
     func testFinishIsIdempotent() {
@@ -131,7 +131,7 @@ final class AsyncOperationTests: XCTestCase {
             "finish() must not fire isFinished KVO more than once")
     }
     
-    /// Regression: start() has no guard against double-calls - a second call
+    /// Regression: start() has no guard against double-calls. A second call
     /// starts another task while the first is still running, which can cause unpredictable behavior.
     func testStartIsIdempotentOnExecutingOperation() async throws {
         let runCount = TestingStorage()
@@ -155,7 +155,7 @@ final class AsyncOperationTests: XCTestCase {
         XCTAssertEqual(count, 1, "start() on an already-executing operation must not launch a second task")
     }
 
-    /// Regression: start() has no guard against double-calls - a second call
+    /// Regression: start() has no guard against double-calls. A second call
     /// starts another task after the task of the operation has already finished, which can cause unpredictable behavior.
     func testStartIsIdempotentOnFinishedOperation() async throws {
         let runCount = TestingStorage()
