@@ -18,7 +18,7 @@ import Foundation
 
 /// An opaque token that uniquely identifies a task added to a `TaskQueue`.
 /// Returned by `TaskQueue.add` and can be passed to `TaskQueue.cancel(_:)` to cancel that specific task.
-final class Ticket: Identifiable, Hashable, Equatable, Sendable {
+internal final class Ticket: Identifiable, Hashable, Equatable, Sendable {
 #if DEBUG
     private let debugID: UUID = UUID()
 #endif

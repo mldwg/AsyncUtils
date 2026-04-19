@@ -20,9 +20,9 @@
 /// the `Collection` conformance, which `TaskQueue` uses to cancel queued-but-not-yet-started tasks
 /// without having to scan the whole list.
 ///
-/// - Note: Not thread-safe on its own. All access must be serialized externally
+/// - Important: Not thread-safe on its own. All access must be serialized externally
 ///   (in practice, by the `TaskQueue` or a comparable actor).
-internal class TicketQueue {
+internal final class TicketQueue {
 
     /// A single node in the doubly-linked list.
     internal final class Node: @unchecked Sendable {

@@ -17,6 +17,7 @@
 import Foundation
 
 /// A rate limiter that allows you to control the rate of actions in your application using a leaky bucket or token bucket (like) algorithm.
+/// 
 /// Tokens can be consumed synchronously or asynchronously.
 /// Asynchronous consumption will block until a token is available, while synchronous consumption will return `false` if no tokens are available.
 /// Tasks blocked waiting for a token will be resumed in the order they were blocked (FIFO).

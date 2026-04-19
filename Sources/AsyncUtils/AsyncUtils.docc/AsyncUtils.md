@@ -1,22 +1,28 @@
 # ``AsyncUtils``
 
-Utilities for Swift Concurrency: a semaphore, rate limiter, task queue, and async-friendly `Operation` subclass.
+Utilities for Swift Concurrency: a task queue, semaphore, async-friendly `Operation` subclass, and rate limiter.
 
 ## Topics
 
-### Rate Limiting
+### Task Management
 
-- ``RateLimiter``
-- ``RateLimiterError``
+- ``TaskQueue``
+- ``QueueTask``
+- ``QueueTicket``
+
 
 ### Synchronization
 
 - ``AsyncSemaphore``
 
-### Task Management
-
-- ``TaskQueue``
 
 ### Operation Queue Integration
 
 - ``AsyncOperation``
+
+
+### Rate Limiting
+
+- ``RateLimiter``
+- ``RateLimitExceededError``
+

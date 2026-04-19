@@ -16,8 +16,12 @@
 
 import Foundation
 
-/// A task queue that can be used to run tasks concurrently with a maximum number of tasks running at the same time. Task are executed in the order they are added to the queue (FIFO).
-/// To provide more flexibility, tasks can be provided with a number of slots that they require. By default, a task requires 1 slot. Tasks will only be started if there are enough slots available. The TaskQueue will never violate FIFO order, so be careful when using slots to ensure that a task requiring more than 1 slot does not unintentionally block other tasks from being started. If you add a task with equal to or more slots than the maximum number of concurrent slots, it will never be started until the maximum number of concurrent slots is increased, effectively blocking the queue from processing any further tasks until the task is started or cancelled.
+/// A task queue that can be used to run tasks concurrently with a configurable maximum number of tasks running at the same time. Task are executed in the order they are added to the queue (FIFO).
+///
+/// To provide more flexibility, tasks can be provided with a number of slots that they require. By default, a task requires 1 slot. Tasks will only be started if there are enough slots available.
+/// The TaskQueue will never violate FIFO order, so be careful when using slots to ensure that a task requiring more than 1 slot does not unintentionally block other tasks from being started.
+/// If you add a task with equal to or more slots than the maximum number of concurrent slots, it will never be started until the maximum number of concurrent slots is increased, effectively blocking the queue from processing any further tasks until the task is started or cancelled.
+///
 /// An optional `taskProvider` closure can be supplied to generate work on demand. It is called whenever the queue is empty and at least one concurrent slot is available, allowing the queue to pull new tasks rather than requiring them to be pushed.
 /// - Note: The TaskQueue is an actor, so it is thread-safe and can be used from multiple threads without any additional synchronization.
 public actor TaskQueue {
@@ -537,7 +541,9 @@ public actor TaskQueue {
 
 // MARK: QueueTask
 
-/// A task that can be added to the queue. The task can be provided with an ID to prevent duplicate tasks from being added to the queue.
+/// A task that can be added to the queue.
+/// 
+/// This struct is used to encapsulate the work that a task should perform, in addition to the priority with which the task should be executed and the number of slots that the task requires.
 public struct QueueTask {
 
     /// The closure that contains the work that the task should perform.
@@ -585,8 +591,9 @@ public struct QueueTask {
 // MARK: - QueueTicket
 
 /// An opaque token representing a task that has been added to a `TaskQueue`.
-/// Returned by `TaskQueue.add`. Pass it to `TaskQueue.cancel(_:)` to cancel
-/// that specific task before or while it runs.
+/// 
+/// Returned by `TaskQueue.add`. 
+/// Pass it to `TaskQueue.cancel(_:)` to cancel that specific task before or while it runs.
 public final class QueueTicket: @unchecked Sendable {
     /// The underlying queue node. Kept internal so `TicketQueue` stays internal.
     internal let node: TicketQueue.Node

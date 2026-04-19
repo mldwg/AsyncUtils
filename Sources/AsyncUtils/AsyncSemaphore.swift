@@ -17,9 +17,10 @@
 import Foundation
 
 /// A Semaphore that allows asynchronous waiting and signaling, mimicking the behavior of a DispatchSemaphore.
+/// 
 /// It supports cancellation of waiting tasks. 
 /// Waiting tasks are signaled in FIFO order in regards to when they were blocked.
-/// -Note: Using `.run` allows you to run an action while holding the semaphore, automatically signaling it after the action completes or if an error occurs.
+/// Using `.run` allows you to run an action while holding the semaphore, automatically signaling it after the action completes or if an error occurs.
 public actor AsyncSemaphore {
     // MARK: Internals
     
