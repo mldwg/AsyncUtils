@@ -1,4 +1,11 @@
 # AsyncUtils
+![iOS 16+](https://img.shields.io/badge/iOS-16%2B-blue.svg)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue.svg)
+![watchOS 9+](https://img.shields.io/badge/watchOS-9%2B-blue.svg)
+![tvOS 16+](https://img.shields.io/badge/tvOS-16%2B-blue.svg)
+![Swift 5.10+](https://img.shields.io/badge/Swift-5.10%2B-orange.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+[![Docs: GitHub Pages](https://img.shields.io/badge/Docs-GitHub%20Pages-2ea44f?logo=github)](https://mldwg.github.io/AsyncUtils/)
 
 A Swift concurrency utility library for Apple platforms. AsyncUtils fills gaps left by the standard library: controlled queues for concurrency, async semaphores, rate limiting, and bridging between Swift concurrency and legacy GCD/`OperationQueue` APIs.
 
