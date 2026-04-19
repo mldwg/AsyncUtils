@@ -181,7 +181,7 @@ Add the package to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/mldwg/AsyncUtils", from: "1.1.0"),
+    .package(url: "https://github.com/mldwg/AsyncUtils", from: "1.0.1"),
 ],
 targets: [
     .target(name: "MyTarget", dependencies: ["AsyncUtils"]),
