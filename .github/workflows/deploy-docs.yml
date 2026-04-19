@@ -29,17 +29,19 @@ jobs:
             -scheme AsyncUtils \
             -destination 'generic/platform=macOS' \
             -derivedDataPath /tmp/docbuild
-
           $(xcrun --find docc) process-archive transform-for-static-hosting \
             /tmp/docbuild/Build/Products/Debug/AsyncUtils.doccarchive \
             --output-path ./docs \
             --hosting-base-path AsyncUtils
 
-      - uses: actions/configure-pages@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: docs
 
-      - id: deployment
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
